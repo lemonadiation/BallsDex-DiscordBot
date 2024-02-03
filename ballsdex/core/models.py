@@ -97,6 +97,8 @@ class Special(models.Model):
         description="Either a unicode character or a discord emoji ID",
         null=True,
     )
+    tradeable = fields.BooleanField(default=True)
+    hidden = fields.BooleanField(default=False, description="Hides the event from user commands")
 
     def __str__(self) -> str:
         return self.name
@@ -144,6 +146,7 @@ class Ball(models.Model):
         max_length=256, description="Description of the countryball's capacity"
     )
     capacity_logic = fields.JSONField(description="Effect of this capacity", default={})
+    created_at = fields.DatetimeField(auto_now_add=True, null=True)
 
     instances: fields.BackwardFKRelation[BallInstance]
 
@@ -185,9 +188,19 @@ class BallInstance(models.Model):
         "models.Player", null=True, default=None, on_delete=fields.SET_NULL
     )
     favorite = fields.BooleanField(default=False)
+    tradeable = fields.BooleanField(default=True)
+    extra_data = fields.JSONField(default={})
 
     class Meta:
         unique_together = ("player", "id")
+
+    @property
+    def is_tradeable(self) -> bool:
+        return (
+            self.tradeable
+            and self.countryball.tradeable
+            and getattr(self.specialcard, "tradeable", True)
+        )
 
     @property
     def attack(self) -> int:
@@ -328,6 +341,12 @@ class DonationPolicy(IntEnum):
     ALWAYS_DENY = 3
 
 
+class PrivacyPolicy(IntEnum):
+    ALLOW = 1
+    DENY = 2
+    SAME_SERVER = 3
+
+
 class Player(models.Model):
     discord_id = fields.BigIntField(
         description="Discord user ID", unique=True, validators=[DiscordSnowflakeValidator()]
@@ -336,6 +355,11 @@ class Player(models.Model):
         DonationPolicy,
         description="How you want to handle donations",
         default=DonationPolicy.ALWAYS_ACCEPT,
+    )
+    privacy_policy = fields.IntEnumField(
+        PrivacyPolicy,
+        description="How you want to handle privacy",
+        default=PrivacyPolicy.DENY,
     )
     balls: fields.BackwardFKRelation[BallInstance]
 

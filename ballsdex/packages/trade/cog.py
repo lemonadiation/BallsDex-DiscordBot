@@ -122,6 +122,12 @@ class Trade(commands.GroupCog):
 
         player1, _ = await Player.get_or_create(discord_id=interaction.user.id)
         player2, _ = await Player.get_or_create(discord_id=user.id)
+        if player2.discord_id in self.bot.blacklist:
+            await interaction.response.send_message(
+                "You cannot trade with a blacklisted user.", ephemeral=True
+            )
+            return
+
         menu = TradeMenu(
             self, interaction, TradingUser(interaction.user, player1), TradingUser(user, player2)
         )
@@ -141,7 +147,7 @@ class Trade(commands.GroupCog):
         """
         if not countryball:
             return
-        if not countryball.countryball.tradeable:
+        if not countryball.is_tradeable:
             await interaction.response.send_message(
                 "You cannot trade this countryball.", ephemeral=True
             )
