@@ -26,7 +26,6 @@ venv
 *.rdb
 
 # static
-static
 
 # cache
 .pytest_cache
