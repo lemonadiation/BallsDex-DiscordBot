@@ -1,13 +1,13 @@
 # CanaDex Discord Bot
 
-[![Discord server](https://discordapp.com/api/guilds/1129827691206545510/embed.png)](https://discord.gg/ygstTHCCRX)
+[![Discord server](https://discordapp.com/api/guilds/1129827691206545510/embed.png)](https://discord.gg/8HjAZMKeeb)
 todo
 
 CanaDex is a bot for collecting ??? on Discord and exchange them with your friends!
 
 dont invite the bot skull emoji
 
-[![Discord server](https://discordapp.com/api/guilds/1049118743101452329/embed.png?style=banner3)](https://discord.gg/Qn2Rkdkxwc)
+[![Discord server](https://discordapp.com/api/guilds/1129827691206545510/embed.png?style=banner3)](https://discord.gg/8HjAZMKeeb)
 
 ## Suggestions, questions and bug reports
 
