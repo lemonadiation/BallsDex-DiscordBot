@@ -1,13 +1,16 @@
 import logging
 import time
-from typing import TYPE_CHECKING, Generic, Iterable, NamedTuple, TypeVar
+from datetime import timedelta
+from enum import Enum
+from typing import TYPE_CHECKING, Generic, Iterable, TypeVar
 
 import discord
-from cachetools import TTLCache
 from discord import app_commands
 from discord.interactions import Interaction
 from tortoise.exceptions import DoesNotExist
+from tortoise.expressions import Q, RawSQL
 from tortoise.models import Model
+from tortoise.timezone import now as tortoise_now
 
 from ballsdex.core.models import (
     Ball,
@@ -36,10 +39,14 @@ __all__ = (
 )
 
 
-class CachedBallInstance(NamedTuple):
-    pk: int
-    searchable: str
-    description: str
+class TradeCommandType(Enum):
+    """
+    If a command is using `BallInstanceTransformer` for trading purposes, it should define this
+    enum to filter out values.
+    """
+
+    PICK = 0
+    REMOVE = 1
 
 
 class ValidationError(Exception):
@@ -143,9 +150,6 @@ class BallInstanceTransformer(ModelTransformer[BallInstance]):
     name = settings.collectible_name
     model = BallInstance  # type: ignore
 
-    def __init__(self):
-        self.cache: TTLCache[int, list[CachedBallInstance]] = TTLCache(maxsize=999, ttl=30)
-
     async def get_from_pk(self, value: int) -> BallInstance:
         return await self.model.get(pk=value).prefetch_related("player")
 
@@ -157,44 +161,41 @@ class BallInstanceTransformer(ModelTransformer[BallInstance]):
     async def get_options(
         self, interaction: Interaction["BallsDexBot"], value: str
     ) -> list[app_commands.Choice[int]]:
-        try:
-            cached = self.cache[interaction.user.id]
-        except KeyError:
-            balls = (
-                await BallInstance.filter(player__discord_id=interaction.user.id)
-                .only(
-                    "id",
-                    "ball_id",
-                    "special_id",
-                    "attack_bonus",
-                    "health_bonus",
-                    "favorite",
-                    "shiny",
-                )
-                .all()
-            )
-            cached = []
-            for ball in balls:
-                searchable = " ".join(
-                    (
-                        ball.countryball.country.lower(),
-                        "{:0x}".format(ball.pk),
-                        *(
-                            ball.countryball.catch_names.split(";")
-                            if ball.countryball.catch_names
-                            else []
-                        ),
+        balls_queryset = BallInstance.filter(player__discord_id=interaction.user.id)
+
+        if (special := getattr(interaction.namespace, "special", None)) and special.isdigit():
+            balls_queryset = balls_queryset.filter(special_id=int(special))
+        if (shiny := getattr(interaction.namespace, "shiny", None)) and shiny is not None:
+            balls_queryset = balls_queryset.filter(shiny=shiny)
+
+        if interaction.command and (trade_type := interaction.command.extras.get("trade", None)):
+            if trade_type == TradeCommandType.PICK:
+                balls_queryset = balls_queryset.filter(
+                    Q(
+                        Q(locked__isnull=True)
+                        | Q(locked__lt=tortoise_now() - timedelta(minutes=30))
                     )
                 )
-                cached.append(CachedBallInstance(ball.pk, searchable, ball.description()))
-            self.cache[interaction.user.id] = cached
+            else:
+                balls_queryset = balls_queryset.filter(
+                    locked__isnull=False, locked__gt=tortoise_now() - timedelta(minutes=30)
+                )
+        balls_queryset = (
+            balls_queryset.select_related("ball")
+            .annotate(
+                searchable=RawSQL(
+                    "to_hex(ballinstance.id) || ' ' || ballinstance__ball.country || "
+                    "' ' || ballinstance__ball.catch_names"
+                )
+            )
+            .filter(searchable__icontains=value)
+            .limit(25)
+        )
 
-        choices: list[app_commands.Choice] = []
-        for ball in cached:
-            if value.lower() in ball.searchable:
-                choices.append(app_commands.Choice(name=ball.description, value=str(ball.pk)))
-                if len(choices) >= 25:
-                    return choices
+        choices: list[app_commands.Choice] = [
+            app_commands.Choice(name=x.description(bot=interaction.client), value=str(x.pk))
+            for x in await balls_queryset
+        ]
         return choices
 
 

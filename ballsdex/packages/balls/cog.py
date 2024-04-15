@@ -23,6 +23,7 @@ from ballsdex.core.utils.transformers import (
     BallEnabledTransform,
     BallInstanceTransform,
     SpecialEnabledTransform,
+    TradeCommandType,
 )
 from ballsdex.packages.balls.countryballs_paginator import CountryballsViewer
 from ballsdex.settings import settings
@@ -64,7 +65,7 @@ class DonationRequest(View):
             )
         except discord.NotFound:
             pass
-        del self.bot.locked_balls[self.countryball.pk]
+        await self.countryball.unlock()
 
     @button(
         style=discord.ButtonStyle.success, emoji="\N{HEAVY CHECK MARK}\N{VARIATION SELECTOR-16}"
@@ -85,7 +86,7 @@ class DonationRequest(View):
             + "\n\N{WHITE HEAVY CHECK MARK} The donation was accepted!",
             view=self,
         )
-        del self.bot.locked_balls[self.countryball.pk]
+        await self.countryball.unlock()
 
     @button(
         style=discord.ButtonStyle.danger,
@@ -100,7 +101,7 @@ class DonationRequest(View):
             + "\n\N{CROSS MARK} The donation was denied.",
             view=self,
         )
-        del self.bot.locked_balls[self.countryball.pk]
+        await self.countryball.unlock()
 
 
 class SortingChoices(enum.Enum):
@@ -136,6 +137,7 @@ class Balls(commands.GroupCog, group_name=settings.players_group_cog_name):
         user: discord.User | None = None,
         sort: SortingChoices | None = None,
         reverse: bool = False,
+        countryball: BallEnabledTransform | None = None,
     ):
         """
         List your countryballs.
@@ -148,6 +150,8 @@ class Balls(commands.GroupCog, group_name=settings.players_group_cog_name):
             Choose how countryballs are sorted. Can be used to show duplicates.
         reverse: bool
             Reverse the output of the list.
+        countryball: Ball
+            Filter the list by a specific countryball.
         """
         user_obj = user or interaction.user
         await interaction.response.defer(thinking=True)
@@ -169,35 +173,37 @@ class Balls(commands.GroupCog, group_name=settings.players_group_cog_name):
                 return
 
         await player.fetch_related("balls")
+        filters = {"ball__id": countryball.pk} if countryball else {}
         if sort:
             if sort == SortingChoices.duplicates:
-                countryballs = await player.balls.all()
+                countryballs = await player.balls.filter(**filters)
                 count = defaultdict(int)
-                for countryball in countryballs:
-                    count[countryball.countryball.pk] += 1
+                for ball in countryballs:
+                    count[ball.countryball.pk] += 1
                 countryballs.sort(key=lambda m: (-count[m.countryball.pk], m.countryball.pk))
             elif sort == SortingChoices.stats_bonus:
-                countryballs = await player.balls.all()
-                countryballs.sort(key=lambda x: (x.health_bonus, x.attack_bonus), reverse=True)
+                countryballs = await player.balls.filter(**filters)
+                countryballs.sort(key=lambda x: x.health_bonus + x.attack_bonus, reverse=True)
             elif sort == SortingChoices.health or sort == SortingChoices.attack:
-                countryballs = await player.balls.all()
+                countryballs = await player.balls.filter(**filters)
                 countryballs.sort(key=lambda x: getattr(x, sort.value), reverse=True)
             elif sort == SortingChoices.total_stats:
-                countryballs = await player.balls.all()
-                countryballs.sort(key=lambda x: (x.health, x.attack), reverse=True)
+                countryballs = await player.balls.filter(**filters)
+                countryballs.sort(key=lambda x: x.health + x.attack, reverse=True)
             else:
-                countryballs = await player.balls.all().order_by(sort.value)
+                countryballs = await player.balls.filter(**filters).order_by(sort.value)
         else:
-            countryballs = await player.balls.all().order_by("-favorite", "-shiny")
+            countryballs = await player.balls.filter(**filters).order_by("-favorite", "-shiny")
 
         if len(countryballs) < 1:
+            ball_txt = countryball.country if countryball else ""
             if user_obj == interaction.user:
                 await interaction.followup.send(
-                    f"You don't have any {settings.collectible_name} yet."
+                    f"You don't have any {ball_txt} {settings.collectible_name} yet."
                 )
             else:
                 await interaction.followup.send(
-                    f"{user_obj.name} doesn't have any {settings.collectible_name} yet."
+                    f"{user_obj.name} doesn't have any {ball_txt} {settings.collectible_name} yet."
                 )
             return
         if reverse:
@@ -337,7 +343,13 @@ class Balls(commands.GroupCog, group_name=settings.players_group_cog_name):
 
     @app_commands.command()
     @app_commands.checks.cooldown(1, 5, key=lambda i: i.user.id)
-    async def info(self, interaction: discord.Interaction, countryball: BallInstanceTransform):
+    async def info(
+        self,
+        interaction: discord.Interaction,
+        countryball: BallInstanceTransform,
+        special: SpecialEnabledTransform | None = None,
+        shiny: bool | None = None,
+    ):
         """
         Display info from a specific countryball.
 
@@ -345,6 +357,10 @@ class Balls(commands.GroupCog, group_name=settings.players_group_cog_name):
         ----------
         countryball: BallInstance
             The countryball you want to inspect
+        special: Special
+            Filter the results of autocompletion to a special event. Ignored afterwards.
+        shiny: bool
+            Filter the results of autocompletion to shinies. Ignored afterwards.
         """
         if not countryball:
             return
@@ -408,9 +424,10 @@ class Balls(commands.GroupCog, group_name=settings.players_group_cog_name):
 
         if not countryball.favorite:
             player = await Player.get(discord_id=interaction.user.id).prefetch_related("balls")
-            if await player.balls.filter(favorite=True).count() > 20:
+            if await player.balls.filter(favorite=True).count() >= settings.max_favorites:
                 await interaction.response.send_message(
-                    f"You cannot set more than 20 favorite {settings.collectible_name}s.",
+                    f"You cannot set more than {settings.max_favorites} "
+                    f"favorite {settings.collectible_name}s.",
                     ephemeral=True,
                 )
                 return
@@ -434,7 +451,7 @@ class Balls(commands.GroupCog, group_name=settings.players_group_cog_name):
                 ephemeral=True,
             )
 
-    @app_commands.command()
+    @app_commands.command(extras={"trade": TradeCommandType.PICK})
     async def give(
         self,
         interaction: discord.Interaction,
@@ -461,12 +478,12 @@ class Balls(commands.GroupCog, group_name=settings.players_group_cog_name):
         if user.bot:
             await interaction.response.send_message("You cannot donate to bots.")
             return
-        if countryball.pk in self.bot.locked_balls:
+        if await countryball.is_locked():
             await interaction.response.send_message(
                 "This countryball is currently locked for a trade. Please try again later."
             )
             return
-        self.bot.locked_balls[countryball.pk] = None
+        await countryball.lock_for_trade()
         new_player, _ = await Player.get_or_create(discord_id=user.id)
         old_player = countryball.player
 
@@ -474,24 +491,24 @@ class Balls(commands.GroupCog, group_name=settings.players_group_cog_name):
             await interaction.response.send_message(
                 f"You cannot give a {settings.collectible_name} to yourself."
             )
-            del self.bot.locked_balls[countryball.pk]
+            await countryball.unlock()
             return
         if new_player.donation_policy == DonationPolicy.ALWAYS_DENY:
             await interaction.response.send_message(
                 "This player does not accept donations. You can use trades instead."
             )
-            del self.bot.locked_balls[countryball.pk]
+            await countryball.unlock()
             return
         if new_player.discord_id in self.bot.blacklist:
             await interaction.response.send_message(
                 "You cannot donate to a blacklisted user", ephemeral=True
             )
-            del self.bot.locked_balls[countryball.pk]
+            await countryball.unlock()
             return
         elif new_player.donation_policy == DonationPolicy.REQUEST_APPROVAL:
             await interaction.response.send_message(
                 f"Hey {user.mention}, {interaction.user.name} wants to give you "
-                f"{countryball.description(include_emoji=True, bot=interaction.client)}!\n"
+                f"{countryball.description(include_emoji=True, bot=self.bot, is_trade=True)}!\n"
                 "Do you accept this donation?",
                 view=DonationRequest(self.bot, interaction, countryball, new_player),
             )
@@ -505,12 +522,13 @@ class Balls(commands.GroupCog, group_name=settings.players_group_cog_name):
         trade = await Trade.create(player1=old_player, player2=new_player)
         await TradeObject.create(trade=trade, ballinstance=countryball, player=old_player)
 
-        await interaction.response.send_message(
-            f"You just gave the {settings.collectible_name} "
-            f"{countryball.description(short=True, include_emoji=True, bot=self.bot)} to "
-            f"{user.mention}!"
+        cb_txt = countryball.description(
+            short=True, include_emoji=True, bot=self.bot, is_trade=True
         )
-        del self.bot.locked_balls[countryball.pk]
+        await interaction.response.send_message(
+            f"You just gave the {settings.collectible_name} {cb_txt} to {user.mention}!"
+        )
+        await countryball.unlock()
 
     @app_commands.command()
     async def count(
