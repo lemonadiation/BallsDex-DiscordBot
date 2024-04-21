@@ -1,3 +1,6 @@
+.env
+# i realized i uploaded the secrets
+
 # Python stuff
 *.pyc
 __pycache__

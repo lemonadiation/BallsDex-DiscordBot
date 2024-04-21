@@ -223,7 +223,11 @@ async def init_tortoise(db_url: str):
     # migrations
     command = Command(TORTOISE_ORM, app="models")
     await command.init()
-    migrations = await command.upgrade()
+    migrations = None
+    try:
+        migrations = await command.upgrade()
+    except:
+        print("FAILED TO UPDATE DATABASE! TRYING TO RUN ANYWAYS [TEMPORARY FIX]")
     if migrations:
         log.info(f"Ran {len(migrations)} migrations: {', '.join(migrations)}")
 
